@@ -1,0 +1,981 @@
+--[[
+    Script: Leoxin+Lyf
+    Versão: 0.1 - Aimbot + Whitelist + ESP
+--]]
+
+if shared.LeoxinLoaded then return end
+shared.LeoxinLoaded = true
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local DefaultSpeed = 16
+
+if LocalPlayer.Character then
+    local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        DefaultSpeed = hum.WalkSpeed
+    end
+end
+
+local Settings = {
+    ESPEnabled = false,
+    ShowNames = true,
+    HighlightRed = true,
+    AimbotEnabled = false,
+    TeamCheck = false,
+    AimbotPart = "Head",
+    Wallbang = false,
+    WindowMinimized = false,
+    SpeedValue = DefaultSpeed,
+}
+
+local Whitelist = {}
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local IsPC = UserInputService.KeyboardEnabled
+
+local CurrentTarget = nil
+local HighlightObjects = {}
+
+-- ============ FUNÇÕES AUXILIARES DE COR ============
+local function GetESPColor(player)
+    if Whitelist[player.Name] then
+        return Color3.fromRGB(144, 238, 144) -- Verde claro (Whitelist)
+    end
+    if Settings.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+        return Color3.new(0, 1, 0) -- Verde (Aliado)
+    end
+    return Color3.new(1, 0, 0) -- Vermelho (Inimigo)
+end
+
+-- ============ FUNÇÕES DO ESP ============
+-- Cria os objetos ESP para o jogador
+local function SetupPlayerESP(player)
+    if player == LocalPlayer then return end
+    if not Settings.ESPEnabled then return end
+
+    -- Remove lixo antigo se existir (garantia de limpeza)
+    if HighlightObjects[player] then
+        pcall(function()
+            if HighlightObjects[player].Highlight then HighlightObjects[player].Highlight:Destroy() end
+            if HighlightObjects[player].Billboard then HighlightObjects[player].Billboard:Destroy() end
+        end)
+        HighlightObjects[player] = nil
+    end
+
+    local character = player.Character
+    if not character then return end
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end -- O loop de 0.5s vai tentar de novo depois
+
+    -- Criando o Highlight (que será controlado pelo .Enabled)
+    local highlight = Instance.new("Highlight")
+    local cor = GetESPColor(player)
+    highlight.FillColor = cor
+    highlight.FillTransparency = 0.3
+    highlight.OutlineColor = cor
+    highlight.OutlineTransparency = 0.1
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Adornee = character
+    highlight.Enabled = Settings.HighlightRed -- Aqui a mágica acontece
+    highlight.Parent = character
+
+    -- Criando o Billboard (que será controlado pelo .Enabled)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Adornee = character
+    billboard.Size = UDim2.new(0, 140, 0, 35)
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Enabled = Settings.ShowNames -- Aqui a mágica acontece
+    billboard.Parent = character
+
+    local text = Instance.new("TextLabel")
+    text.BackgroundTransparency = 1
+    text.TextStrokeTransparency = 0.3
+    text.TextScaled = true
+    text.Size = UDim2.new(1, 0, 1, 0)
+    text.TextColor3 = cor
+    text.Font = Enum.Font.GothamBold
+    text.TextSize = 10
+    text.TextStrokeColor3 = Color3.new(0, 0, 0)
+    text.Parent = billboard
+
+    HighlightObjects[player] = {
+        Highlight = highlight,
+        Billboard = billboard,
+        Text = text,
+        Player = player
+    }
+end
+
+-- Atualiza textos e cores (executado a cada frame)
+local function UpdateESPTexts()
+    if not Settings.ESPEnabled then return end
+
+    for player, esp in pairs(HighlightObjects) do
+        if esp.Text and player.Character and player.Character.Parent then
+            local distance = 0
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("HumanoidRootPart") then
+                distance = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).Magnitude
+            end
+
+            local cor = GetESPColor(player)
+            local teamText = ""
+            if Settings.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                teamText = " [ALIADO]"
+            end
+
+            esp.Highlight.FillColor = cor
+            esp.Highlight.OutlineColor = cor
+            esp.Text.Text = string.format("%s%s\n%.1f m", player.Name, teamText, distance)
+            esp.Text.TextColor3 = cor
+        end
+    end
+end
+
+-- Atualiza as cores de TODOS instantaneamente (usado quando altera a Whitelist)
+local function UpdateAllESPColors()
+    for player, esp in pairs(HighlightObjects) do
+        if esp.Highlight and esp.Text and player.Character then
+            local cor = GetESPColor(player)
+            esp.Highlight.FillColor = cor
+            esp.Highlight.OutlineColor = cor
+            esp.Text.TextColor3 = cor
+        end
+    end
+end
+
+-- Remove ESP de um jogador específico
+local function RemovePlayerESP(player)
+    if HighlightObjects[player] then
+        pcall(function()
+            if HighlightObjects[player].Highlight then HighlightObjects[player].Highlight:Destroy() end
+            if HighlightObjects[player].Billboard then HighlightObjects[player].Billboard:Destroy() end
+        end)
+        HighlightObjects[player] = nil
+    end
+end
+
+-- Remove TODOS os ESPs
+local function RemoveAllESP()
+    for player, esp in pairs(HighlightObjects) do
+        pcall(function()
+            if esp.Highlight then esp.Highlight:Destroy() end
+            if esp.Billboard then esp.Billboard:Destroy() end
+        end)
+    end
+    table.clear(HighlightObjects)
+end
+
+-- ============ AIMBOT (SEM WALLBANG) ============
+local function GetTargetPart(player)
+    if Settings.AimbotPart == "Head" then
+        return player.Character:FindFirstChild("Head")
+    elseif Settings.AimbotPart == "Torso" then
+        local torso = player.Character:FindFirstChild("UpperTorso") or
+                      player.Character:FindFirstChild("Torso") or
+                      player.Character:FindFirstChild("HumanoidRootPart")
+        return torso
+    end
+    return nil
+end
+
+local function IsVisible(part)
+    if not part then return false end
+    local origin = Camera.CFrame.Position
+    local direction = (part.Position - origin).Unit * (part.Position - origin).Magnitude
+    local ray = Ray.new(origin, direction)
+    local hit, position = workspace:FindPartOnRay(ray, LocalPlayer.Character)
+    if hit then
+        if hit:IsDescendantOf(part.Parent) then return true end
+        return false
+    end
+    return true
+end
+
+local function GetClosestPlayerToScreenCenter()
+    local closestPlayer = nil
+    local closestDistance = math.huge
+    local screenCenter = Camera.ViewportSize / 2
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                if Settings.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                else
+                    if Whitelist[player.Name] then continue end
+                    local targetPart = GetTargetPart(player)
+                    if targetPart then
+                        if not IsVisible(targetPart) then continue end
+                        local vector, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                        if onScreen then
+                            local distanceToCenter = (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude
+                            if distanceToCenter < closestDistance then
+                                closestDistance = distanceToCenter
+                                closestPlayer = player
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer, closestDistance
+end
+
+local function UpdateAimbot()
+    if not Settings.AimbotEnabled then 
+        CurrentTarget = nil
+        return 
+    end
+    
+    local target, distanceToCenter = GetClosestPlayerToScreenCenter()
+    local activationRadius = 300
+    
+    if target and distanceToCenter < activationRadius then
+        CurrentTarget = target
+        local targetPart = GetTargetPart(target)
+        if targetPart and IsVisible(targetPart) then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+        end
+    elseif CurrentTarget then
+        if CurrentTarget.Character and CurrentTarget.Character:FindFirstChild("Humanoid") and CurrentTarget.Character.Humanoid.Health > 0 and not Whitelist[CurrentTarget.Name] then
+            local targetPart = GetTargetPart(CurrentTarget)
+            if targetPart and IsVisible(targetPart) then
+                local vector, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                if onScreen then
+                    local screenCenter = Camera.ViewportSize / 2
+                    local distToCenter = (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude
+                    if distToCenter < 400 then
+                        Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+                        return
+                    end
+                end
+            end
+        end
+        CurrentTarget = nil
+    end
+end
+
+-- ============ INTERFACE GRÁFICA ============
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LeoxinUI"
+ScreenGui.Parent = game:GetService("CoreGui")
+ScreenGui.Enabled = true
+
+local MainFrame = Instance.new("Frame")
+if IsMobile then
+    MainFrame.Size = UDim2.new(0.95, 0, 0.9, 0)
+    MainFrame.Position = UDim2.new(0.05, 0, 0.1, 0)
+else
+    MainFrame.Size = UDim2.new(0, 700, 0, 520)
+    MainFrame.Position = UDim2.new(0.5, -350, 0.5, -260)
+end
+MainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MainFrame.BackgroundTransparency = 0
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+Title.Text = "Leoxin+Lyf V0.1" -- <--- TÍTULO ALTERADO AQUI
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 20
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = Title
+
+local MinimizeButton = Instance.new("TextButton")
+MinimizeButton.Size = UDim2.new(0, 25, 0, 25)
+MinimizeButton.Position = UDim2.new(1, -75, 0, 8)
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MinimizeButton.Text = "_"
+MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinimizeButton.TextSize = 18
+MinimizeButton.Parent = Title
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 25, 0, 25)
+CloseButton.Position = UDim2.new(1, -35, 0, 8)
+CloseButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.TextSize = 18
+CloseButton.Parent = Title
+
+local OpenButton = Instance.new("TextButton")
+OpenButton.Size = UDim2.new(0, 50, 0, 50)
+OpenButton.Position = UDim2.new(0, 20, 0.5, -25)
+OpenButton.BackgroundColor3 = Color3.fromRGB(40,40,40)
+OpenButton.Text = "+"
+OpenButton.TextColor3 = Color3.new(1,1,1)
+OpenButton.TextScaled = true
+OpenButton.Visible = false
+OpenButton.Parent = ScreenGui
+
+local OpenCorner = Instance.new("UICorner")
+OpenCorner.CornerRadius = UDim.new(1,0)
+OpenCorner.Parent = OpenButton
+
+if IsPC then
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode == Enum.KeyCode.M then
+            MainFrame.Visible = not MainFrame.Visible
+            if MainFrame.Visible then
+                OpenButton.Visible = false
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            else
+                OpenButton.Visible = true
+                UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+            end
+        end
+    end)
+end
+
+OpenButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = true
+    OpenButton.Visible = false
+    if IsPC then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+end)
+
+local draggingOpen = false
+local openDragInput
+local openDragStart
+local openStartPos
+local function updateOpenButton(input)
+    local delta = input.Position - openDragStart
+    local newX = openStartPos.X.Offset + delta.X
+    local newY = openStartPos.Y.Offset + delta.Y
+    local viewport = workspace.CurrentCamera.ViewportSize
+    newX = math.clamp(newX, 0, viewport.X - OpenButton.AbsoluteSize.X)
+    newY = math.clamp(newY, 0, viewport.Y - OpenButton.AbsoluteSize.Y)
+    OpenButton.Position = UDim2.new(0, newX, 0, newY)
+end
+OpenButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingOpen = true
+        openDragStart = input.Position
+        openStartPos = OpenButton.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then draggingOpen = false end
+        end)
+    end
+end)
+OpenButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        openDragInput = input
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == openDragInput and draggingOpen then updateOpenButton(input) end
+end)
+
+local dragging = false
+local dragInput
+local dragStart
+local startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+Title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+Title.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then update(input) end
+end)
+
+-- ============ SISTEMA DE ABAS ============
+local TabContainer = Instance.new("Frame")
+TabContainer.Size = UDim2.new(1, 0, 0, 30)
+TabContainer.Position = UDim2.new(0, 0, 0, 40)
+TabContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+TabContainer.Parent = MainFrame
+
+local TabPrincipal = Instance.new("TextButton")
+TabPrincipal.Size = UDim2.new(0.33, 0, 1, 0)
+TabPrincipal.Position = UDim2.new(0, 0, 0, 0)
+TabPrincipal.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+TabPrincipal.Text = "Principal"
+TabPrincipal.TextColor3 = Color3.fromRGB(255, 255, 255)
+TabPrincipal.TextSize = 14
+TabPrincipal.Font = Enum.Font.GothamBold
+TabPrincipal.Parent = TabContainer
+
+local TabESP = Instance.new("TextButton")
+TabESP.Size = UDim2.new(0.33, 0, 1, 0)
+TabESP.Position = UDim2.new(0.33, 0, 0, 0)
+TabESP.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TabESP.Text = "ESP"
+TabESP.TextColor3 = Color3.fromRGB(255, 255, 255)
+TabESP.TextSize = 14
+TabESP.Font = Enum.Font.GothamBold
+TabESP.Parent = TabContainer
+
+local TabWhitelist = Instance.new("TextButton")
+TabWhitelist.Size = UDim2.new(0.34, 0, 1, 0)
+TabWhitelist.Position = UDim2.new(0.66, 0, 0, 0)
+TabWhitelist.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TabWhitelist.Text = "Whitelist"
+TabWhitelist.TextColor3 = Color3.fromRGB(255, 255, 255)
+TabWhitelist.TextSize = 14
+TabWhitelist.Font = Enum.Font.GothamBold
+TabWhitelist.Parent = TabContainer
+
+local ContentContainer = Instance.new("Frame")
+ContentContainer.Size = UDim2.new(1, 0, 1, -70)
+ContentContainer.Position = UDim2.new(0, 0, 0, 70)
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Parent = MainFrame
+
+local MainContent = Instance.new("Frame")
+MainContent.Size = UDim2.new(1, 0, 1, 0)
+MainContent.Position = UDim2.new(0, 0, 0, 0)
+MainContent.BackgroundTransparency = 1
+MainContent.Visible = true
+MainContent.Parent = ContentContainer
+
+local ESPContent = Instance.new("Frame")
+ESPContent.Size = UDim2.new(1, 0, 1, 0)
+ESPContent.Position = UDim2.new(0, 0, 0, 0)
+ESPContent.BackgroundTransparency = 1
+ESPContent.Visible = false
+ESPContent.Parent = ContentContainer
+
+local WhitelistContent = Instance.new("Frame")
+WhitelistContent.Size = UDim2.new(1, 0, 1, 0)
+WhitelistContent.Position = UDim2.new(0, 0, 0, 0)
+WhitelistContent.BackgroundTransparency = 1
+WhitelistContent.Visible = false
+WhitelistContent.Parent = ContentContainer
+
+local function SelectTab(tabName)
+    MainContent.Visible = (tabName == "Principal")
+    ESPContent.Visible = (tabName == "ESP")
+    WhitelistContent.Visible = (tabName == "Whitelist")
+
+    TabPrincipal.BackgroundColor3 = (tabName == "Principal") and Color3.fromRGB(50, 50, 50) or Color3.fromRGB(30, 30, 30)
+    TabESP.BackgroundColor3 = (tabName == "ESP") and Color3.fromRGB(50, 50, 50) or Color3.fromRGB(30, 30, 30)
+    TabWhitelist.BackgroundColor3 = (tabName == "Whitelist") and Color3.fromRGB(50, 50, 50) or Color3.fromRGB(30, 30, 30)
+end
+TabPrincipal.MouseButton1Click:Connect(function() SelectTab("Principal") end)
+TabESP.MouseButton1Click:Connect(function() SelectTab("ESP") end)
+TabWhitelist.MouseButton1Click:Connect(function() SelectTab("Whitelist") end)
+
+-- ============ CONTEÚDO PRINCIPAL (Aimbot, Speed, Target) ============
+local function CreateToggle(parent, yPos, text, settingName, defaultValue)
+    local toggleFrame = Instance.new("Frame")
+    toggleFrame.Size = UDim2.new(0.9, 0, 0, 50)
+    toggleFrame.Position = UDim2.new(0.05, 0, 0, yPos)
+    toggleFrame.BackgroundColor3 = Color3.fromRGB(20, 20,20)
+    toggleFrame.BackgroundTransparency = 0.3
+    toggleFrame.Parent = parent
+
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 8)
+    toggleCorner.Parent = toggleFrame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.7, 0, 1, 0)
+    label.Position = UDim2.new(0.05, 0, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextSize = 18
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = toggleFrame
+
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Size = UDim2.new(0, 60, 0, 30)
+    toggleButton.Position = UDim2.new(0.85, 0, 0.5, -15)
+    toggleButton.BackgroundColor3 = defaultValue and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(244, 67, 54)
+    toggleButton.Text = defaultValue and "ON" or "OFF"
+    toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleButton.TextSize = 16
+    toggleButton.Parent = toggleFrame
+
+    local buttonCorner = Instance.new("UICorner")
+    buttonCorner.CornerRadius = UDim.new(0, 5)
+    buttonCorner.Parent = toggleButton
+
+    local isEnabled = defaultValue
+    Settings[settingName] = defaultValue
+
+    toggleButton.MouseButton1Click:Connect(function()
+        isEnabled = not isEnabled
+        Settings[settingName] = isEnabled
+        toggleButton.BackgroundColor3 = isEnabled and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(244, 67, 54)
+        toggleButton.Text = isEnabled and "ON" or "OFF"
+
+        -- Controle imediato dos objetos ESP existentes (sem precisar recriar)
+        if settingName == "ShowNames" then
+            for _, esp in pairs(HighlightObjects) do
+                if esp and esp.Billboard then
+                    esp.Billboard.Enabled = isEnabled
+                end
+            end
+        elseif settingName == "HighlightRed" then
+            for _, esp in pairs(HighlightObjects) do
+                if esp and esp.Highlight then
+                    esp.Highlight.Enabled = isEnabled
+                end
+            end
+        end
+
+        if settingName == "AimbotEnabled" and not isEnabled then
+            CurrentTarget = nil
+        end
+    end)
+
+    return toggleButton
+end
+
+-- Aimbot
+CreateToggle(MainContent, 20, "🎯 Aimbot (SÓ MIRA VISÍVEIS)", "AimbotEnabled", false)
+
+-- Speed
+local speedFrame = Instance.new("Frame")
+speedFrame.Size = UDim2.new(0.9, 0, 0, 70)
+speedFrame.Position = UDim2.new(0.05, 0, 0, 85)
+speedFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+speedFrame.BackgroundTransparency = 0.3
+speedFrame.Parent = MainContent
+
+local speedCorner = Instance.new("UICorner")
+speedCorner.CornerRadius = UDim.new(0, 8)
+speedCorner.Parent = speedFrame
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(0.4, 0, 1, 0)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "🏃 Speed:"
+speedLabel.TextColor3 = Color3.fromRGB(255,255,255)
+speedLabel.TextSize = 16
+speedLabel.Parent = speedFrame
+
+local speedBox = Instance.new("TextBox")
+speedBox.Size = UDim2.new(0, 80, 0, 35)
+speedBox.Position = UDim2.new(0.45, 0, 0.5, -17)
+speedBox.BackgroundColor3 = Color3.fromRGB(60,60,70)
+speedBox.Text = tostring(Settings.SpeedValue)
+speedBox.TextColor3 = Color3.fromRGB(255,255,255)
+speedBox.TextSize = 16
+speedBox.Parent = speedFrame
+
+task.spawn(function()
+    task.wait(1)
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            Settings.SpeedValue = hum.WalkSpeed
+            speedBox.Text = tostring(hum.WalkSpeed)
+        end
+    end
+end)
+
+local speedApply = Instance.new("TextButton")
+speedApply.Size = UDim2.new(0, 80, 0, 35)
+speedApply.Position = UDim2.new(1, -90, 0.5, -17)
+speedApply.BackgroundColor3 = Color3.fromRGB(76,175,80)
+speedApply.Text = "Aplicar"
+speedApply.TextColor3 = Color3.fromRGB(255,255,255)
+speedApply.TextSize = 14
+speedApply.Parent = speedFrame
+speedApply.MouseButton1Click:Connect(function()
+    local value = tonumber(speedBox.Text)
+    if value and value > 0 then
+        Settings.SpeedValue = value
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = value end
+        end
+    end
+end)
+
+-- Seleção de Alvo
+local targetFrame = Instance.new("Frame")
+targetFrame.Size = UDim2.new(0.9, 0, 0, 60)
+targetFrame.Position = UDim2.new(0.05, 0, 0, 170)
+targetFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+targetFrame.BackgroundTransparency = 0.3
+targetFrame.Parent = MainContent
+
+local targetCorner = Instance.new("UICorner")
+targetCorner.CornerRadius = UDim.new(0, 8)
+targetCorner.Parent = targetFrame
+
+local headButton = Instance.new("TextButton")
+headButton.Size = UDim2.new(0.4, 0, 0, 35)
+headButton.Position = UDim2.new(0.05, 0, 0.5, -17)
+headButton.BackgroundColor3 = Color3.fromRGB(33, 150, 243)
+headButton.Text = "🔫 Cabeça"
+headButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+headButton.TextSize = 16
+headButton.Font = Enum.Font.GothamBold
+headButton.Parent = targetFrame
+
+local headCorner = Instance.new("UICorner")
+headCorner.CornerRadius = UDim.new(0, 5)
+headCorner.Parent = headButton
+
+local chestButton = Instance.new("TextButton")
+chestButton.Size = UDim2.new(0.4, 0, 0, 35)
+chestButton.Position = UDim2.new(0.55, 0, 0.5, -17)
+chestButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+chestButton.Text = "💪 Peito"
+chestButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+chestButton.TextSize = 16
+chestButton.Font = Enum.Font.GothamBold
+chestButton.Parent = targetFrame
+
+local chestCorner = Instance.new("UICorner")
+chestCorner.CornerRadius = UDim.new(0, 5)
+chestCorner.Parent = chestButton
+
+-- REMOVIDO O TEXTO "Atual: Cabeça" AQUI, APENAS OS BOTÕES PERMANECEM
+
+headButton.MouseButton1Click:Connect(function() 
+    Settings.AimbotPart = "Head" 
+    -- Atualizar a cor dos botões sem depender do texto removido
+    headButton.BackgroundColor3 = Color3.fromRGB(33, 150, 243)
+    chestButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+end)
+
+chestButton.MouseButton1Click:Connect(function() 
+    Settings.AimbotPart = "Torso" 
+    -- Atualizar a cor dos botões sem depender do texto removido
+    headButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    chestButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+end)
+
+-- REMOVIDO O BLOCO DE CRÉDITOS "Leoxin v0.3 | Aimbot..."
+
+-- ============ CONTEÚDO ESP ============
+local espTitle = Instance.new("TextLabel")
+espTitle.Size = UDim2.new(1, 0, 0, 30)
+espTitle.Position = UDim2.new(0, 0, 0, 0)
+espTitle.BackgroundTransparency = 1
+espTitle.Text = "Configurações ESP"
+espTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+espTitle.TextSize = 18
+espTitle.Font = Enum.Font.GothamBold
+espTitle.Parent = ESPContent
+
+-- Criando os toggles do ESP
+CreateToggle(ESPContent, 40, "🔴 Ativar ESP (Master)", "ESPEnabled", false)
+CreateToggle(ESPContent, 105, "👤 Mostrar nomes", "ShowNames", true)
+CreateToggle(ESPContent, 170, "🔴 Marcar players em vermelho", "HighlightRed", true)
+
+-- ============ CONTEÚDO WHITELIST ============
+local wlTitle = Instance.new("TextLabel")
+wlTitle.Size = UDim2.new(1, 0, 0, 30)
+wlTitle.Position = UDim2.new(0, 0, 0, 0)
+wlTitle.BackgroundTransparency = 1
+wlTitle.Text = "Gerenciar Whitelist"
+wlTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+wlTitle.TextSize = 18
+wlTitle.Font = Enum.Font.GothamBold
+wlTitle.Parent = WhitelistContent
+
+local inputFrame = Instance.new("Frame")
+inputFrame.Size = UDim2.new(0.9, 0, 0, 60)
+inputFrame.Position = UDim2.new(0.05, 0, 0, 40)
+inputFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+inputFrame.BackgroundTransparency = 0.3
+inputFrame.Parent = WhitelistContent
+
+local inputCorner = Instance.new("UICorner")
+inputCorner.CornerRadius = UDim.new(0, 8)
+inputCorner.Parent = inputFrame
+
+local inputLabel = Instance.new("TextLabel")
+inputLabel.Size = UDim2.new(0.3, 0, 1, 0)
+inputLabel.Position = UDim2.new(0.05, 0, 0, 0)
+inputLabel.BackgroundTransparency = 1
+inputLabel.Text = "Username:"
+inputLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+inputLabel.TextSize = 16
+inputLabel.TextXAlignment = Enum.TextXAlignment.Left
+inputLabel.Parent = inputFrame
+
+local inputBox = Instance.new("TextBox")
+inputBox.Size = UDim2.new(0.5, 0, 0, 35)
+inputBox.Position = UDim2.new(0.35, 0, 0.5, -17)
+inputBox.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+inputBox.Text = ""
+inputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+inputBox.TextSize = 16
+inputBox.PlaceholderText = "Digite o nome ou /todos"
+inputBox.Parent = inputFrame
+
+local addButton = Instance.new("TextButton")
+addButton.Size = UDim2.new(0, 60, 0, 30)
+addButton.Position = UDim2.new(0.9, -70, 0.5, -15)
+addButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+addButton.Text = "Adicionar"
+addButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+addButton.TextSize = 12
+addButton.Parent = inputFrame
+
+local removeButton = Instance.new("TextButton")
+removeButton.Size = UDim2.new(0, 60, 0, 30)
+removeButton.Position = UDim2.new(1, -10, 0.5, -15)
+removeButton.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+removeButton.Text = "Remover"
+removeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+removeButton.TextSize = 12
+removeButton.Parent = inputFrame
+
+local warningLabel = Instance.new("TextLabel")
+warningLabel.Size = UDim2.new(0.9, 0, 0, 25)
+warningLabel.Position = UDim2.new(0.05, 0, 0, 105)
+warningLabel.BackgroundTransparency = 1
+warningLabel.Text = ""
+warningLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+warningLabel.TextSize = 14
+warningLabel.TextXAlignment = Enum.TextXAlignment.Center
+warningLabel.Parent = WhitelistContent
+
+local warningTimer = nil
+local function ShowWarning(text, color)
+    if warningTimer then
+        warningTimer:Disconnect()
+        warningTimer = nil
+    end
+    warningLabel.Text = text
+    warningLabel.TextColor3 = color or Color3.fromRGB(255, 200, 0)
+    warningTimer = task.delay(3, function()
+        warningLabel.Text = ""
+        warningTimer = nil
+    end)
+end
+
+local listFrame = Instance.new("Frame")
+listFrame.Size = UDim2.new(0.9, 0, 0, 200)
+listFrame.Position = UDim2.new(0.05, 0, 0, 135)
+listFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+listFrame.BackgroundTransparency = 0.3
+listFrame.Parent = WhitelistContent
+
+local listCorner = Instance.new("UICorner")
+listCorner.CornerRadius = UDim.new(0, 8)
+listCorner.Parent = listFrame
+
+local WhitelistListFrame = Instance.new("ScrollingFrame")
+WhitelistListFrame.Size = UDim2.new(0.95, 0, 0.95, 0)
+WhitelistListFrame.Position = UDim2.new(0.025, 0, 0.025, 0)
+WhitelistListFrame.BackgroundTransparency = 1
+WhitelistListFrame.ScrollBarThickness = 5
+WhitelistListFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+WhitelistListFrame.Parent = listFrame
+
+local function UpdateWhitelistUI()
+    if not WhitelistListFrame then return end
+    for _, child in ipairs(WhitelistListFrame:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    local yPos = 0
+    for name, _ in pairs(Whitelist) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, 0, 0, 25)
+        btn.Position = UDim2.new(0, 0, 0, yPos)
+        btn.BackgroundTransparency = 0.5
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        btn.Text = name
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 14
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.Parent = WhitelistListFrame
+        btn.MouseButton1Click:Connect(function() inputBox.Text = name end)
+        yPos = yPos + 25
+    end
+    WhitelistListFrame.CanvasSize = UDim2.new(0, 0, 0, yPos + 5)
+end
+
+local function FindPlayerByPrefix(prefix)
+    local found = {}
+    local lowerPrefix = string.lower(prefix)
+    for _, player in ipairs(Players:GetPlayers()) do
+        local name = player.Name
+        if string.lower(string.sub(name, 1, #prefix)) == lowerPrefix then
+            table.insert(found, player)
+        end
+    end
+    if #found == 1 then return found[1] end
+    return nil
+end
+
+Players.PlayerRemoving:Connect(function(player)
+    if Whitelist[player.Name] then
+        Whitelist[player.Name] = nil
+        UpdateWhitelistUI()
+    end
+    RemovePlayerESP(player)
+end)
+
+addButton.MouseButton1Click:Connect(function()
+    local inputName = inputBox.Text:gsub("^%s*(.-)%s*$", "%1")
+    if inputName == "" then return end
+    if inputName == "/todos" then
+        local added = 0
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and not Whitelist[player.Name] then
+                Whitelist[player.Name] = true
+                added = added + 1
+            end
+        end
+        if added > 0 then
+            UpdateWhitelistUI()
+            UpdateAllESPColors()
+            ShowWarning(string.format("✅ %d jogadores adicionados à Whitelist.", added), Color3.fromRGB(0, 255, 0))
+        else
+            ShowWarning("⚠️ Nenhum jogador novo para adicionar.", Color3.fromRGB(255, 200, 0))
+        end
+        inputBox.Text = ""
+        return
+    end
+    local targetPlayer = FindPlayerByPrefix(inputName)
+    if targetPlayer then
+        local fullName = targetPlayer.Name
+        if Whitelist[fullName] then
+            ShowWarning(string.format("⚠️ '%s' já está na Whitelist!", fullName), Color3.fromRGB(255, 100, 100))
+            return
+        end
+        Whitelist[fullName] = true
+        UpdateWhitelistUI()
+        UpdateAllESPColors()
+        ShowWarning(string.format("✅ '%s' adicionado à Whitelist.", fullName), Color3.fromRGB(0, 255, 0))
+        inputBox.Text = ""
+    else
+        ShowWarning("❌ Jogador não encontrado ou nome ambíguo.", Color3.fromRGB(255, 100, 100))
+    end
+end)
+
+removeButton.MouseButton1Click:Connect(function()
+    local name = inputBox.Text:gsub("^%s*(.-)%s*$", "%1")
+    if name ~= "" and Whitelist[name] then
+        Whitelist[name] = nil
+        UpdateWhitelistUI()
+        UpdateAllESPColors()
+        ShowWarning(string.format("✅ '%s' removido da Whitelist.", name), Color3.fromRGB(0, 255, 0))
+        inputBox.Text = ""
+    elseif name == "" then
+        ShowWarning("❌ Digite um nome para remover.", Color3.fromRGB(255, 100, 100))
+    else
+        ShowWarning("⚠️ Esse nome não está na Whitelist.", Color3.fromRGB(255, 200, 0))
+    end
+end)
+
+pcall(UpdateWhitelistUI)
+
+-- ============ MINIMIZAR ============
+local function ToggleMinimize()
+    Settings.WindowMinimized = not Settings.WindowMinimized
+    ContentContainer.Visible = not Settings.WindowMinimized
+    TabContainer.Visible = not Settings.WindowMinimized
+    if Settings.WindowMinimized then
+        MainFrame.Size = UDim2.new(MainFrame.Size.X.Scale, MainFrame.Size.X.Offset, 0, 50)
+    else
+        if IsMobile then
+            MainFrame.Size = UDim2.new(0.9, 0, 0.8, 0)
+        else
+            MainFrame.Size = UDim2.new(0, 700, 0, 520)
+        end
+    end
+    MinimizeButton.Text = Settings.WindowMinimized and "□" or "-"
+end
+MinimizeButton.MouseButton1Click:Connect(ToggleMinimize)
+
+CloseButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    OpenButton.Visible = true
+    if IsPC then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+    end
+end)
+
+-- ============ LOOP DE VERIFICAÇÃO + RENDER ============
+local checkTimer = 0
+
+RunService.RenderStepped:Connect(function(dt)
+    -- 1. Aimbot (se ativado)
+    if Settings.AimbotEnabled then
+        UpdateAimbot()
+    end
+
+    -- 2. Verificação de estado do ESP (segue sua sugestão mais sólida)
+    checkTimer = checkTimer + dt
+    if checkTimer >= 0.5 then -- Verifica a cada 0.5 segundos
+        checkTimer = 0
+
+        if not Settings.ESPEnabled then
+            if next(HighlightObjects) then
+                RemoveAllESP()
+            end
+            return
+        end
+
+        -- Itera sobre todos os jogadores para garantir que o ESP esteja funcionando
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player == LocalPlayer then continue end
+
+            local char = player.Character
+            if not char or not char:FindFirstChild("HumanoidRootPart") then
+                if HighlightObjects[player] then
+                    RemovePlayerESP(player)
+                end
+                continue
+            end
+
+            local esp = HighlightObjects[player]
+
+            -- Se não existe ESP, ou se o personagem mudou (respawn) sem avisar
+            if not esp or esp.Highlight.Parent ~= char then
+                SetupPlayerESP(player)
+            else
+                -- Se já existe, apenas certificamos que os Enabled estão corretos e a cor atualizada
+                esp.Highlight.Enabled = Settings.HighlightRed
+                esp.Billboard.Enabled = Settings.ShowNames
+                
+                local cor = GetESPColor(player)
+                esp.Highlight.FillColor = cor
+                esp.Highlight.OutlineColor = cor
+                esp.Text.TextColor3 = cor
+            end
+        end
+    end
+
+    -- 3. Atualização dos textos (distância) em tempo real (acontece a cada frame)
+    if Settings.ESPEnabled then
+        UpdateESPTexts()
+    end
+end)
